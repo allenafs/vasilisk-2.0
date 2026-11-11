@@ -1,0 +1,25 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+dist/
+build/
+*.spec
+
+# --- Логи и временные файлы ---
+*.log
+*.tmp
+.cache/
+
+# --- Системный мусор ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Локальные настройки IDE ---
+.idea/
+.vscode/
+*.swp

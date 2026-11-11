@@ -1,0 +1,12 @@
+{
+  "port": 9001,
+  "token": "vasilisk_2026",
+  "role": "carry",
+  "rank": "legend",
+  "voice": true,
+  "voice_name": "",
+  "tts_rate": 1,
+  "llm": true,
+  "llm_url": "http://127.0.0.1:11434",
+  "llm_model": "qwen2.5:7b-instruct"
+}
