@@ -39,15 +39,24 @@ class CoachLLM:
         self.enabled = enabled
         self.available = False
         self.last_error = ""
+        self._session = None
+
+    def _sess(self):
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def close(self):
+        if self._session and not self._session.closed:
+            await self._session.close()
 
     async def check(self) -> bool:
         if not self.enabled:
             return False
         try:
-            async with aiohttp.ClientSession() as s:
-                async with s.get(f"{self.url}/api/tags",
-                                 timeout=aiohttp.ClientTimeout(total=2)) as r:
-                    self.available = r.status == 200
+            async with self._sess().get(f"{self.url}/api/tags",
+                                        timeout=aiohttp.ClientTimeout(total=2)) as r:
+                self.available = r.status == 200
         except Exception as e:
             self.available = False
             self.last_error = str(e)
@@ -57,7 +66,6 @@ class CoachLLM:
         """Компактный контекст матча для промпта."""
         try:
             hero = st.hero.get("name") or ""
-            goal = None
             return (
                 f"контекст: герой={hero.replace('npc_dota_hero_', '')}, "
                 f"минута={int(st.clock // 60)}, золото={int(st.gold)}, "
@@ -80,12 +88,11 @@ class CoachLLM:
             "options": {"temperature": 0.6, "num_predict": 60},
         }
         try:
-            async with aiohttp.ClientSession() as s:
-                async with s.post(f"{self.url}/api/chat", json=payload,
-                                  timeout=aiohttp.ClientTimeout(total=6)) as r:
-                    if r.status != 200:
-                        return None
-                    data = await r.json()
+            async with self._sess().post(f"{self.url}/api/chat", json=payload,
+                                         timeout=aiohttp.ClientTimeout(total=6)) as r:
+                if r.status != 200:
+                    return None
+                data = await r.json()
             text = str((data.get("message") or {}).get("content") or "").strip()
             text = text.replace("\n", " ").strip().strip('"«»')
             if not text or len(text) > 160 or "**" in text:
@@ -97,3 +104,45 @@ class CoachLLM:
             return text
         except Exception:
             return None
+
+
+    # ------------------------------------------------------------------ свободный тренер и вопросы
+    async def _chat(self, system: str, user: str, num_predict: int, timeout: int):
+        payload = {"model": self.model, "stream": False,
+                   "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                   "options": {"temperature": 0.4, "num_predict": num_predict}}
+        async with self._sess().post(f"{self.url}/api/chat", json=payload,
+                                     timeout=aiohttp.ClientTimeout(total=timeout)) as r:
+            if r.status != 200:
+                raise RuntimeError(f"Ollama HTTP {r.status}")
+            data = await r.json()
+        return str((data.get("message") or {}).get("content") or "").replace("\n", " ").strip().strip('"«»')
+
+    async def coach(self, context: str, recent: list) -> str | None:
+        """Одна короткая подсказка «что делать сейчас». Числа обязаны быть из контекста."""
+        if not self.available:
+            return None
+        system = ("Ты тренер по Dota 2. По данным ниже дай ОДНО конкретное действие на ближайшую минуту, "
+                  "одной русской фразой до 14 слов. Используй только данные ниже: не выдумывай героев, предметы, числа "
+                  "и позиции врагов (их ты не знаешь). Не повторяй недавние советы.")
+        user = f"{context}\nНедавние советы: {' | '.join(recent) or 'нет'}"
+        try:
+            text = await self._chat(system, user, 60, 8)
+        except Exception as e:
+            self.last_error = str(e)
+            return None
+        if not text or len(text) > 170 or "**" in text:
+            return None
+        allowed = set(re.findall(r"\d+", context + " ".join(recent)))
+        return text if set(re.findall(r"\d+", text)) <= allowed else None
+
+    async def ask(self, question: str, context: str) -> str:
+        """Вопрос игрока. Ответ может быть неточным: у модели только данные из контекста."""
+        if not self.available:
+            return "Ollama недоступна: установи её с ollama.com и выполни `ollama pull " + self.model + "`."
+        system = ("Ты тренер по Dota 2. Отвечай по-русски кратко (до 3 предложений). Опирайся на данные матча ниже; "
+                  "если данных не хватает, так и скажи. Позиций и предметов врагов ты не знаешь.")
+        try:
+            return await self._chat(system, f"{context}\n\nВопрос: {question}", 200, 40) or "Нет ответа."
+        except Exception as e:
+            return f"Ошибка Ollama: {e}"

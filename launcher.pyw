@@ -16,11 +16,12 @@ from __future__ import annotations
 import importlib.util
 import os
 import queue
+import socket
 import subprocess
 import sys
 import threading
-import time
 import tkinter as tk
+import webbrowser
 from tkinter import filedialog, messagebox, ttk
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -150,6 +151,11 @@ class VasiliskCenter:
                                  cursor="hand2", padx=10, pady=6,
                                  font=("Segoe UI", 10, "bold"), command=self.on_run)
         self.btn_run.pack(side="left", expand=True, fill="x")
+        self.btn_panel = tk.Button(row, text="ПАНЕЛЬ (вопросы ИИ, драфт)", bg=PANEL, fg=PURPLE,
+                                   activebackground=LINE, relief="flat", bd=0,
+                                   cursor="hand2", padx=10, pady=6,
+                                   font=("Segoe UI", 10, "bold"), command=self.on_panel)
+        self.btn_panel.pack(side="left", expand=True, fill="x")
         self.btn_demo = tk.Button(row, text="ДЕМО-МАТЧ (без Dota 2)", bg=PANEL, fg=YELLOW,
                                   activebackground=LINE, relief="flat", bd=0,
                                   cursor="hand2", padx=10, pady=6,
@@ -244,6 +250,9 @@ class VasiliskCenter:
             messagebox.showwarning(APP_NAME, "Пакетов ещё нет — сначала нажми "
                                              "«УСТАНОВИТЬ / ПОЧИНИТЬ ВСЁ».")
             return
+        if self._trainer_running():
+            self.log("yellow", "▸ Тренер уже запущен (порт 9001 занят). Открой панель кнопкой справа.")
+            return
         exe = sys.executable
         if os.name == "nt":
             cand = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
@@ -256,6 +265,20 @@ class VasiliskCenter:
                               "возле нижней кромки экрана. Полный лог: vasilisk.log")
         except Exception as e:
             self.log("red", f"✗ не удалось запустить тренера: {e}")
+
+    @staticmethod
+    def _trainer_running(port=9001):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                return True
+        except OSError:
+            return False
+
+    def on_panel(self):
+        if not self._trainer_running():
+            self.log("yellow", "▸ Тренер не запущен — сначала нажми «ЗАПУСК ТРЕНЕРА».")
+            return
+        webbrowser.open("http://127.0.0.1:9001/ui")
 
     def on_demo(self):
         bat = os.path.join(ROOT, "start_demo.bat")

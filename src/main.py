@@ -28,6 +28,8 @@ from builds import Builds
 from gsi_server import CoachApp, make_app
 from llm import CoachLLM
 from tts import Speaker
+import extras
+import webui
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -45,6 +47,8 @@ def load_config():
         "llm": True,
         "llm_url": "http://127.0.0.1:11434",
         "llm_model": "qwen2.5:7b-instruct",
+        "free_coach": True,
+        "coach_interval": 30,
     }
     try:
         with open(cfg_path, encoding="utf-8") as f:
@@ -52,7 +56,16 @@ def load_config():
         defaults.update({k: v for k, v in user.items() if v is not None})
     except Exception:
         pass
+    defaults["role"] = extras.normalize_role(defaults["role"])   # 1-5 или carry/mid/...
     return defaults
+
+
+def save_config(cfg):
+    try:
+        with open(os.path.join(BASE, "config.json"), "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 
 def make_logger(path):
@@ -69,6 +82,8 @@ def make_logger(path):
 
 async def run(args):
     cfg = load_config()
+    if args.port:
+        cfg["port"] = args.port            # только на этот запуск, config.json не трогаем
     log = make_logger(os.path.join(BASE, "vasilisk.log"))
     log("=" * 60)
     log("ВАСИЛИСК 2.0 — ИИ-тренер запускается…")
@@ -124,16 +139,25 @@ async def run(args):
                       builds=builds)
     coach = CoachApp(advisor, llm, speaker, renderer, logger=log, token=cfg["token"],
                      record_path=args.record)
+    coach.free_coach = cfg.get("free_coach", True)
+    coach.coach_interval = cfg.get("coach_interval", 30)
     coach.plan_loader = lambda hero: builds.load_plan(hero, cfg["role"])
 
     asyncio.create_task(speaker.run_forever(logger=log))
 
     app = make_app(coach, port=cfg["port"])
+    webui.register(app, coach, cfg, lambda: save_config(cfg), builds, cfg["port"])
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", cfg["port"])
-    await site.start()
+    try:
+        await site.start()
+    except OSError as e:
+        log(f"[GSI] ✗ порт {cfg['port']} занят ({e}). Скорее всего тренер уже запущен: закрой его окно "
+            f"(или запусти с другим портом: --port 9002 и поправь uri в gamestate_integration_vasilisk.cfg).")
+        return
     log(f"[GSI] слушаю http://127.0.0.1:{cfg['port']}/ — запусти матч Dota 2")
+    log(f"[UI] панель (вопросы ИИ, драфт, роль): http://127.0.0.1:{cfg['port']}/ui")
     log("[GSI] проверка без доты: python tools/simulate_match.py")
     if args.record:
         log(f"[GSI] сырые пакеты пишутся в: {args.record}")
@@ -148,6 +172,7 @@ async def run(args):
             await asyncio.sleep(3600)
     except (KeyboardInterrupt, asyncio.CancelledError):
         log("остановка…")
+        await llm.close()
         await runner.cleanup()
 
 
@@ -161,16 +186,6 @@ def main():
     p.add_argument("--record", default=None, metavar="FILE",
                    help="писать сырые GSI-пакеты в FILE (jsonl) — проверить, что шлёт клиент")
     args = p.parse_args()
-
-    if args.port:
-        # подмешиваем порт до загрузки конфига
-        cfg_path = os.path.join(BASE, "config.json")
-        try:
-            cfg = json.load(open(cfg_path, encoding="utf-8"))
-        except Exception:
-            cfg = {}
-        cfg["port"] = args.port
-        json.dump(cfg, open(cfg_path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 
     if os.name == "nt":
         os.system("")  # включает ANSI-цвета в консоли Windows 10+

@@ -72,7 +72,8 @@ class MatchState:
         self.enemy_last_known: Dict[str, dict] = {}  # npc-имя -> {x,y,clock}
         self.own_wards_last_placed: Optional[float] = None
         self.hero_key: Optional[str] = None
-        self.team: str = "radiant"             # auto: radiant|dire
+        self.team: str = "radiant"             # уточняется из player.team_name
+        self.aegis_pick_clock: Optional[float] = None
         self.matchid: Optional[str] = None
         self.match_started = False
         self.game_over = False
@@ -195,6 +196,9 @@ class MatchState:
         }
 
         _merge(self.raw, payload)
+        tn = str(self.player.get("team_name") or "").lower()
+        if tn in ("radiant", "dire"):
+            self.team = tn                      # надёжный источник: игра сама говорит сторону
 
         # --- идентификация матча/героя/команды
         mid = self.map.get("matchid")
@@ -237,6 +241,8 @@ class MatchState:
         # ушли из инвентаря (проданы/съедены/переехали в courier) — не событие покупки
         self.recent_purchases = sorted(n for n in purchased if n not in disappeared and n not in CONSUMABLE_VIEW)
         self.seen_items = cur_items
+        if "item_aegis" in purchased:
+            self.aegis_pick_clock = self.clock   # 5 минут считаем с момента подбора
 
         # --- смерть/респавн героя
         alive = self.hero.get("alive")

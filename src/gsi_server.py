@@ -8,9 +8,9 @@ Dota шлёт частичные JSON-блоки (map/player/hero/items/minimap/
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
-from typing import Callable
 
 from aiohttp import web
 
@@ -18,6 +18,7 @@ from state import MatchState
 from advisor import Advisor
 from llm import CoachLLM
 from tts import Speaker
+from extras import build_context
 
 
 class CoachApp:
@@ -38,6 +39,13 @@ class CoachApp:
         self.record_path = record_path      # сырые пакеты в JSONL (—record)
         self.blocks_seen: set = set()       # какие блоки реально приходили
         self._blocks_warned = False
+        # --- очередь доставки (LLM не задерживает ответ игре) и свободный тренер
+        self._dq: asyncio.Queue = asyncio.Queue()
+        self.free_coach = True
+        self.coach_interval = 30
+        self._next_coach = 0.0
+        self._next_llm_check = 0.0
+        self._last_spoken = 0.0
 
     # ------------------------------------------------------------------ http
     async def handle_gsi(self, request: web.Request):
@@ -47,11 +55,10 @@ class CoachApp:
             return web.Response(status=400)
         if not isinstance(payload, dict):
             return web.Response(status=400)
-        auth = payload.get("auth") or {}
-        tok = auth.get("token")
-        if self.token and tok and tok != self.token:
+        tok = (payload.get("auth") or {}).get("token")
+        if self.token and tok != self.token:        # пакет без токена тоже отклоняем
             if self.state.auth_token_ok is not False:
-                self.log("[GSI] чужой токен — пакет проигнорирован")
+                self.log("[GSI] пакет без токена или с чужим токеном — игнорирую (проверь auth.token в .cfg)")
             self.state.auth_token_ok = False
             return web.Response(status=403)
         self.state.auth_token_ok = True
@@ -76,7 +83,7 @@ class CoachApp:
 
         advices = self.advisor.on_state(st)
         for adv in advices:
-            await self._deliver(adv)
+            self._dq.put_nowait(adv)
         self.renderer.timers(self.advisor.timers_panel(st))
         self._warn_missing_blocks()
         return web.Response(status=204)
@@ -95,6 +102,60 @@ class CoachApp:
                 self.log(f"[BUILD] не удалось загрузить план: {e}")
             finally:
                 self._plan_loading = False
+
+    # ------------------------------------------------------------------ фоновые задачи
+    async def deliver_worker(self):
+        """Доставляет советы по порядку: ожидание нейросети не задерживает ответ игре."""
+        while True:
+            adv = await self._dq.get()
+            try:
+                await self._deliver(adv)
+            except Exception as e:
+                self.log(f"[GSI] ошибка доставки совета: {e}")
+
+    async def coach_loop(self):
+        """Раз в coach_interval секунд сам даёт короткий совет «что делать сейчас» (если есть Ollama)."""
+        while True:
+            await asyncio.sleep(3)
+            try:
+                now = time.time()
+                if self.llm.enabled and not self.llm.available and now >= self._next_llm_check:
+                    self._next_llm_check = now + 30        # Ollama могли запустить уже после тренера
+                    if await self.llm.check():
+                        self.log(f"[LLM] Ollama появилась: {self.llm.model}")
+                st = self.state
+                if not (self.free_coach and self.llm.enabled and self.llm.available):
+                    continue
+                if (now - st.last_payload_ts > 10 or not st.match_started or st.game_over
+                        or st.clock < 60 or now < self._next_coach or now - self._last_spoken < 15):
+                    continue
+                self._next_coach = now + self.coach_interval
+                recent = [a["text"] for a in self.advice_log[-3:]]
+                text = await self.llm.coach(build_context(st, self.advisor), recent)
+                if text:
+                    clock_s = st.fmt_clock()
+                    self.renderer.advice(text, 1, clock_s)
+                    self.log(f"[{clock_s}] [ИИ] {text}")
+                    self.advice_log.append({"clock": clock_s, "text": text, "cat": "coach", "prio": 1})
+                    self.advice_log = self.advice_log[-50:]
+                    self._last_spoken = time.time()
+                    await self.speaker.say(text)
+            except Exception:
+                pass
+
+    def blocks_report(self) -> str:
+        got = sorted(self.blocks_seen)
+        if not got:
+            return "Ожидание пакетов от Dota 2…"
+        core_miss = [b for b in ("map", "player", "hero", "items", "abilities") if b not in self.blocks_seen]
+        opt = {"minimap": "видимость врагов", "buildings": "состояние башен", "events": "события"}
+        miss = [f"{b} ({why})" for b, why in opt.items() if b not in self.blocks_seen]
+        msg = f"Блоки из игры: {', '.join(got)}."
+        if core_miss:
+            msg += f" Не приходят важные: {', '.join(core_miss)}."
+        if miss:
+            msg += " Не приходят: " + ", ".join(miss) + " — зависящие подсказки отключены."
+        return msg
 
     def _warn_missing_blocks(self):
         """Одно предупреждение, если реальный клиент не шлёт minimap/buildings.
@@ -133,6 +194,7 @@ class CoachApp:
                                 "cat": adv.cat, "prio": adv.prio})
         self.advice_log = self.advice_log[-50:]
         if adv.tts:
+            self._last_spoken = time.time()
             # факт правила → живая фраза (Ollama); нет нейросети — шаблон
             phrase = None
             if self.llm.enabled and self.llm.available:
@@ -162,7 +224,17 @@ class CoachApp:
 
 
 def make_app(coach: CoachApp, port=9001):
-    app = web.Application()
+    app = web.Application(client_max_size=2 * 1024 * 1024)   # пакеты GSI маленькие: ограничиваем размер
+
+    async def _start(a):
+        coach._bg = [asyncio.create_task(coach.deliver_worker()), asyncio.create_task(coach.coach_loop())]
+
+    async def _stop(a):
+        for t in getattr(coach, "_bg", []):
+            t.cancel()
+
+    app.on_startup.append(_start)
+    app.on_cleanup.append(_stop)
     app.router.add_post("/", coach.handle_gsi)
     app.router.add_get("/health", coach.handle_health)
     app.router.add_get("/advice", coach.handle_advice)

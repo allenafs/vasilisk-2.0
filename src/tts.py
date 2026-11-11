@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 TTS — озвучка советов тренера: Windows SAPI через PowerShell
-(движок System.Speech; маркеры VASILISK_TTS_STARTED/COMPLETED — для зерка
+(движок System.Speech; маркеры VASILISK_TTS_STARTED/COMPLETED — для зеркала
 трейса, как это делают стрим-оверлеи).
 
 Windows: powershell System.Speech (голос из config.json, напр. Irina).
@@ -12,14 +12,21 @@ from __future__ import annotations
 import asyncio
 import platform
 import subprocess
-import sys
 
 MARK_START = "VASILISK_TTS_STARTED"
 MARK_DONE = "VASILISK_TTS_COMPLETED"
 
 
+import re
+
+
 def _ps_speak(text: str, voice: str, rate: int) -> str:
-    t = text.replace("'", "’").replace('"', "")
+    t = re.sub(r"[\r\n`$]", " ", text).replace("'", "’").replace('"', "")
+    voice = re.sub(r"[^\w .()-]", "", voice or "")          # имя голоса: только буквы, цифры, пробел, ().-
+    try:
+        rate = max(-10, min(10, int(rate)))
+    except (TypeError, ValueError):
+        rate = 0
     sel = f"$s.SelectVoice('{voice}');" if voice else ""
     return (
         "Add-Type -AssemblyName System.Speech;"

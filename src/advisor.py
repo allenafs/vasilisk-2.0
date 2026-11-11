@@ -6,15 +6,14 @@ Advisor v3 — «мозг» ВАСИЛИСК 2.0: что делать, куда 
   • состояние матча из GSI (золото, ХП, тайминги, миникарта, башни);
   • реальную статистику OpenDota (снимок data/meta.json + живые запросы):
     тайминги покупок, популярность предметов, перцентили GPM/ластхитов;
-  • общеизвестные механики Dota 2 (руны каждые 2/3 мин, аутпосты 10/20/30,
+  • общеизвестные механики Dota 2 (руны каждые 2/3 мин, руна мудрости с 7:00,
     ночь/день, аегис ~5 мин, Рошан 8–11 мин).
 
-Категории (как в бинарниках kolokol/PTS Booster): Timing / Buyback / Lane /
+Категории советов: Timing / Buyback / Lane /
 Smoke / Resource / Recovery / Defense / Vision / Roshan / Macro / Economy.
 """
 from __future__ import annotations
 
-import random
 from typing import Optional
 
 from rules_data import (
@@ -22,6 +21,7 @@ from rules_data import (
     LANE_GUIDE, LANE_RU, ward_spot, item_ru, hero_ru, zone_name,
 )
 from state import MatchState, mmss
+from extras import ExtraRules
 
 PRIORITY_LOW, PRIORITY_MED, PRIORITY_HIGH = 1, 2, 3
 MAX_ADVICE_PER_TICK = 4          # не захлёбываем игрока
@@ -74,6 +74,7 @@ class Advisor:
         self._matchup_warned: set = set()   # враги, о чьих вингейтах уже сказали
         self._luxury_said: set = set()     # люксы, о которых уже сказали
         self.match_events: list = []      # журнал (текст, clock, cat, prio)
+        self.extra = ExtraRules(self)     # файты, ганк, контр-предметы
 
     # ------------------------------------------------------------------ utils
     def _ready(self, st: MatchState, key: str, cd=None) -> bool:
@@ -122,6 +123,7 @@ class Advisor:
         out.extend(self._on_death(st))
         out.extend(self._on_match_start(st))
         out.extend(self._on_lane_guide(st))
+        out.extend(self.extra.on_state(st))
         out = [a for a in out if a]
         out.sort(key=lambda a: -a.prio)
         return out[:MAX_ADVICE_PER_TICK]
@@ -306,19 +308,14 @@ class Advisor:
                 out.append(self.emit(st, "53-я секунда — застакай лагерь для керри.",
                                      "lane", PRIORITY_MED, key="lane:stack"))
 
-        # --- аутпосты на 10/20/30 минутах
-        if minute in (10, 20, 30) and sec <= 20:
-            mk = f"outpost:{minute}"
-            if mk not in self._outpost_marks:
-                self._outpost_marks.add(mk)
-                out.append(self.emit(st, f"{minute}-я минута — захвати аутпост: опыт команде и обзор.",
+        # --- руна мудрости: 7:00 и далее каждые 7 минут (с патча 7.33 она заменила томик;
+        #     аутпосты опыта и обзора больше не дают — советов про них нет)
+        if minute >= 6 and (minute + 1) % 7 == 0 and 48 <= sec <= 58:
+            mk = f"rune:wisdom:{minute}"
+            if mk not in self._rune_marks:
+                self._rune_marks.add(mk)
+                out.append(self.emit(st, "Руна мудрости через 10 секунд — не отдавай её врагу, опыт всей команде.",
                                      "macro", PRIORITY_MED, key=mk))
-
-        # --- томик для саппортов после 10-й
-        if self.role in SUPPORT_ROLES and minute >= 10 and minute - self._tome_last >= 5:
-            self._tome_last = minute
-            out.append(self.emit(st, "Купи томик опыта — плюс уровни всей команде.",
-                                 "economy", PRIORITY_LOW, key="economy:tome"))
 
         # --- GPM-чек на 10/20 минутах: РЕАЛЬНЫЕ перцентили героя
         if minute in (10, 20) and minute not in self._gpm_checks:
@@ -432,7 +429,6 @@ class Advisor:
     # ------------------------------------------------------------------ Рошан
     def _on_roshan(self, st: MatchState):
         out = []
-        rt = st.roshan_timers()
         if st.roshan_death_clock is not None and self._rosh_phase < 1:
             self._rosh_phase = 1
             self._aegis_hinted = False
@@ -441,7 +437,7 @@ class Advisor:
                 st, f"Рошан пал на {mmss(d)}. Аегис ~5 минут, следующий — {mmss(d + 480)}–{mmss(d + 660)}.",
                 "roshan", PRIORITY_HIGH, key="roshan:death"))
         if (st.roshan_death_clock is not None and self._rosh_phase == 1
-                and st.clock >= st.roshan_death_clock + 300 and not self._aegis_hinted):
+                and st.clock >= (st.aegis_pick_clock or st.roshan_death_clock) + 300 and not self._aegis_hinted):
             self._aegis_hinted = True
             self._rosh_phase = 2
             out.append(self.emit(st, "Аегис истёк: соперники пойдут на нового Рошана — держи питу под контролем.",
@@ -458,6 +454,7 @@ class Advisor:
         if "ALIVE" in rs.upper() and st.roshan_death_clock is not None and self._rosh_phase == 3:
             self._rosh_phase = 0
             st.roshan_death_clock = None
+            st.aegis_pick_clock = None
             out.append(self.emit(st, "Рошан заспавнился!", "roshan", PRIORITY_HIGH, key="roshan:alive"))
         return out
 

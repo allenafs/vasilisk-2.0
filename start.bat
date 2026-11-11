@@ -15,6 +15,7 @@ echo   создатель: ALLENAFS
 echo   при поддержке: Carassius, Репозиторий Гитхабович, GLM
 echo ==================================================
 echo Голос: Windows SAPI. Оверлей поверх игры. Ctrl+C — выход.
+echo Панель (вопросы ИИ, драфт, роль): http://127.0.0.1:9001/ui
 echo.
 python src\main.py --mode overlay
 pause

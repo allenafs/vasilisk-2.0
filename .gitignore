@@ -23,3 +23,12 @@ desktop.ini
 .idea/
 .vscode/
 *.swp
+
+# --- Данные запуска ---
+builds_cache.json
+gsi_first_payload.json
+gsi_samples/
+post_match_report_*.txt
+*.vasilisk-bak
+data/matches.jsonl
+data/winmodel.json

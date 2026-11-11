@@ -144,9 +144,9 @@ FULL_ENEMY = {  # состав врага (Dire)
 def mm(*keys):
     """Собрать миникарту из ключей FULL_ENEMY (+ свои герои при 'cm','axe'…)."""
     els = [(3, FULL_ENEMY[k][0], *FULL_ENEMY[k][1]) for k in keys if k in FULL_ENEMY]
-    own = {"cm": (2, "npc_dota_hero_crystal_maiden", (1500, -4100)),
-           "axe": (2, "npc_dota_hero_axe", (-500, -3800)),
-           "storm": (2, "npc_dota_hero_storm_spirit", (-1800, 1900))}
+    own = {"cm": (2, "npc_dota_hero_crystal_maiden", 1500, -4100),
+           "axe": (2, "npc_dota_hero_axe", -500, -3800),
+           "storm": (2, "npc_dota_hero_storm_spirit", -1800, 1900)}
     for k in keys:
         if k in own:
             els.append(own[k])

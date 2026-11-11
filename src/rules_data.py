@@ -91,7 +91,6 @@ CONSUMABLES = {
 HERO_RU = {
     "npc_dota_hero_juggernaut": "Джаггернаут",
     "npc_dota_hero_zuus": "Зевс",
-    "npc_dota_hero_snapfire": "Снапфаер",
     "npc_dota_hero_mars": "Марс",
     "npc_dota_hero_pudge": "Пудж",
     "npc_dota_hero_axe": "Акс",
